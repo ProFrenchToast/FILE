@@ -3,6 +3,8 @@
 from typing import Dict, List, Optional, Any
 import asyncio
 import docker
+import importlib.resources
+from pathlib import Path
 from .config import FactorioConfig
 
 
@@ -16,6 +18,16 @@ class FactorioInstance:
         self.container: Optional[docker.models.containers.Container] = None
         self.docker_client: Optional[docker.DockerClient] = None
         self._initialized = False
+    
+    @staticmethod
+    def get_fle_scenario_path(scenario_name: str) -> str:
+        """Get absolute path to FLE scenario using importlib.resources."""
+        fle_package = importlib.resources.files("fle")
+        scenario_path = fle_package / "cluster" / "scenarios" / scenario_name
+        
+        # Convert to absolute path
+        with importlib.resources.as_file(scenario_path) as resolved_path:
+            return str(Path(resolved_path).resolve())
     
     async def start(self) -> None:
         """Start the Factorio server container."""
@@ -35,9 +47,21 @@ class FactorioInstance:
         run_config = {
             "image": self.config.docker_image,
             "name": container_name,
+            "entrypoint": "",
+            "command": [
+                "/opt/factorio/bin/x64/factorio",
+                "--start-server-load-scenario", "default_lab_scenario",
+                "--port", "34197",
+                "--rcon-port", "27015",
+                "--rcon-password", "factorio"
+            ],
             "ports": {
                 "34197/udp": game_port,
                 "27015/tcp": rcon_port
+            },
+            "volumes": {
+                self.get_fle_scenario_path("default_lab_scenario"): {"bind": "/opt/factorio/scenarios/default_lab_scenario", "mode": "ro"},
+                self.get_fle_scenario_path("open_world"): {"bind": "/opt/factorio/scenarios/open_world", "mode": "ro"}
             },
             "environment": {
                 "FACTORIO_SERVER_NAME": f"Inspect-AI-{self.instance_id}",
@@ -46,7 +70,7 @@ class FactorioInstance:
             "mem_limit": self.config.memory_limit,
             "cpu_count": int(self.config.cpu_limit),
             "detach": True,
-            "remove": True
+            "remove": False
         }
         
         try:
@@ -73,6 +97,7 @@ class FactorioInstance:
         
         try:
             self.container.stop(timeout=10)
+            self.container.remove()
             self.container = None
         except Exception as e:
             # Try force remove if stop fails
@@ -147,12 +172,21 @@ class FactorioInstance:
             
             try:
                 self.container.reload()
+                if attempt % 5 == 0:  # Only print every 5 attempts to reduce noise
+                    print(f"Attempt {attempt}: Container status: {self.container.status}")
+                
                 if self.container.status == "running":
                     # Container is running, wait a bit more for Factorio to initialize
+                    print("Container is running, waiting for Factorio to initialize...")
                     await asyncio.sleep(2)
                     return
-            except Exception:
-                pass
+                elif self.container.status == "exited":
+                    # Container exited, check logs
+                    logs = self.container.logs().decode()
+                    raise RuntimeError(f"Container exited. Logs: {logs}")
+            except Exception as e:
+                if attempt % 10 == 0:  # Only print errors occasionally
+                    print(f"Exception during readiness check: {e}")
             
             await asyncio.sleep(1)
         
