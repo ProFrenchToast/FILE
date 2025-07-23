@@ -14,6 +14,7 @@ class FactorioConfig(BaseModel):
     # Network configuration
     base_port: int = Field(default=34197, description="Base UDP port for Factorio servers")
     rcon_port: int = Field(default=27015, description="Base TCP port for RCON")
+    rcon_password: str = Field(default="factorio", description="Password for RCON connections")
     port_range: int = Field(default=100, description="Range of ports to use for multiple instances")
     
     # Game configuration

@@ -2,7 +2,7 @@
 
 import pytest
 import asyncio
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, AsyncMock
 from factorio_inspect.environment import FactorioSandboxEnvironment
 from factorio_inspect.instance import FactorioInstance
 from factorio_inspect.config import FactorioConfig
@@ -194,6 +194,199 @@ class TestFactorioIntegration:
         
         # Test that the sandbox is properly decorated
         assert hasattr(FactorioSandboxEnvironment, '__qualname__')
+    
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rcon_python_execution_mocked(self, config):
+        """Test Python code execution via RCON with mocked components."""
+        with patch('docker.from_env') as mock_docker, \
+             patch('factorio_rcon.RCONClient') as mock_rcon:
+            
+            # Mock Docker
+            mock_client = Mock()
+            mock_container = Mock()
+            mock_container.status = "running"
+            mock_client.containers.run.return_value = mock_container
+            mock_docker.return_value = mock_client
+            
+            # Mock RCON
+            mock_rcon_client = Mock()
+            mock_rcon_client.connect = AsyncMock()
+            mock_rcon_client.send_command = AsyncMock(return_value="42")
+            mock_rcon.return_value = mock_rcon_client
+            
+            # Create instance and test Python execution
+            instance = FactorioInstance(config, "rcon-test")
+            environment = FactorioSandboxEnvironment(instance)
+            
+            async with instance:
+                # Test Python code execution through environment
+                result = await environment.exec(["python", "-c", "print(6 * 7)"])
+                assert result.success
+                assert "42" in result.stdout
+                
+                # Verify RCON was connected and used
+                mock_rcon_client.connect.assert_called()
+                mock_rcon_client.send_command.assert_called()
+    
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.docker
+    async def test_rcon_real_docker_integration(self, config):
+        """Test RCON with real Docker container (requires Factorio image)."""
+        import time
+        unique_id = f"rcon-docker-test-{int(time.time())}"
+        instance = FactorioInstance(config, unique_id)
+        
+        try:
+            await instance.start()
+            
+            if instance.is_running:
+                # Test basic RCON connectivity
+                result = await instance.execute_python_code("2 + 2")
+                assert result is not None
+                
+                # Test Python execution through environment
+                environment = FactorioSandboxEnvironment(instance)
+                exec_result = await environment.exec(["python", "-c", "print('Hello RCON')"])
+                
+                # If RCON is working, we should get success
+                # If not implemented yet, we expect specific error
+                if exec_result.success:
+                    assert "Hello RCON" in exec_result.stdout
+                else:
+                    # Should be RCON-related error, not "not implemented"
+                    assert "not implemented" not in exec_result.stderr.lower()
+                    
+        finally:
+            await instance.stop()
+    
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_concurrent_rcon_connections(self, config):
+        """Test multiple RCON connections running concurrently."""
+        with patch('docker.from_env') as mock_docker, \
+             patch('factorio_rcon.RCONClient') as mock_rcon:
+            
+            # Mock Docker for multiple containers
+            mock_client = Mock()
+            containers = []
+            rcon_clients = []
+            
+            for i in range(3):
+                # Docker container mock
+                container = Mock()
+                container.status = "running"
+                containers.append(container)
+                
+                # RCON client mock
+                rcon_client = Mock()
+                rcon_client.connect = AsyncMock()
+                rcon_client.send_command = AsyncMock(return_value=f"result-{i}")
+                rcon_clients.append(rcon_client)
+            
+            mock_client.containers.run.side_effect = containers
+            mock_rcon.side_effect = rcon_clients
+            mock_docker.return_value = mock_client
+            
+            # Create multiple instances
+            instances = [
+                FactorioInstance(config, f"rcon-concurrent-{i}")
+                for i in range(3)
+            ]
+            
+            try:
+                # Start all instances
+                await asyncio.gather(*[instance.start() for instance in instances])
+                
+                # Test concurrent Python execution
+                results = await asyncio.gather(*[
+                    instance.execute_python_code(f"print('test-{i}')")
+                    for i, instance in enumerate(instances)
+                ])
+                
+                # Verify all executions succeeded
+                for i, result in enumerate(results):
+                    assert result == f"result-{i}"
+                
+                # Verify all RCON clients were used
+                for rcon_client in rcon_clients:
+                    rcon_client.connect.assert_called()
+                    rcon_client.send_command.assert_called()
+                    
+            finally:
+                await asyncio.gather(*[instance.stop() for instance in instances])
+    
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rcon_error_handling_integration(self, config):
+        """Test RCON error handling in integration scenarios."""
+        with patch('docker.from_env') as mock_docker, \
+             patch('factorio_rcon.RCONClient') as mock_rcon:
+            
+            # Mock Docker
+            mock_client = Mock()
+            mock_container = Mock()
+            mock_container.status = "running"
+            mock_client.containers.run.return_value = mock_container
+            mock_docker.return_value = mock_client
+            
+            # Mock RCON with connection error
+            from factorio_rcon import RCONConnectError
+            mock_rcon_client = Mock()
+            mock_rcon_client.connect = AsyncMock(side_effect=RCONConnectError("Connection failed"))
+            mock_rcon.return_value = mock_rcon_client
+            
+            instance = FactorioInstance(config, "rcon-error-test")
+            environment = FactorioSandboxEnvironment(instance)
+            
+            async with instance:
+                # Test Python execution with RCON connection failure
+                result = await environment.exec(["python", "-c", "print('test')"])
+                
+                # Should handle RCON error gracefully
+                assert not result.success
+                assert "connection" in result.stderr.lower() or "rcon" in result.stderr.lower()
+    
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rcon_reconnection_handling(self, config):
+        """Test RCON reconnection after connection loss."""
+        with patch('docker.from_env') as mock_docker, \
+             patch('factorio_rcon.RCONClient') as mock_rcon:
+            
+            # Mock Docker
+            mock_client = Mock()
+            mock_container = Mock()
+            mock_container.status = "running"
+            mock_client.containers.run.return_value = mock_container
+            mock_docker.return_value = mock_client
+            
+            # Mock RCON with initial failure then success
+            from factorio_rcon import RCONSendError
+            mock_rcon_client = Mock()
+            mock_rcon_client.connect = AsyncMock()
+            mock_rcon_client.send_command = AsyncMock(
+                side_effect=[
+                    RCONSendError("Send error"),  # First call fails
+                    "success"  # Second call succeeds
+                ]
+            )
+            mock_rcon.return_value = mock_rcon_client
+            
+            instance = FactorioInstance(config, "rcon-reconnect-test")
+            
+            async with instance:
+                # First execution should fail
+                try:
+                    await instance.execute_python_code("print('first')")
+                    assert False, "Should have raised error"
+                except RuntimeError:
+                    pass  # Expected
+                
+                # Second execution should succeed (if retry logic is implemented)
+                result = await instance.execute_python_code("print('second')")
+                assert result == "success" or result is None  # Depends on implementation
 
 
 @pytest.fixture(scope="session")

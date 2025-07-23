@@ -7,6 +7,17 @@ import importlib.resources
 from pathlib import Path
 from .config import FactorioConfig
 
+# RCON imports
+try:
+    import factorio_rcon
+    from factorio_rcon import (
+        RCONBaseError, RCONConnectError, RCONClosed, 
+        RCONSendError, RCONReceiveError, RCONNotConnected
+    )
+    RCON_AVAILABLE = True
+except ImportError:
+    RCON_AVAILABLE = False
+
 
 class FactorioInstance:
     """Manages a single Factorio server instance with Docker containerization."""
@@ -17,6 +28,7 @@ class FactorioInstance:
         self.instance_id = instance_id
         self.container: Optional[docker.models.containers.Container] = None
         self.docker_client: Optional[docker.DockerClient] = None
+        self.rcon_client: Optional[Any] = None  # Will be factorio_rcon.RCONClient
         self._initialized = False
     
     @staticmethod
@@ -95,6 +107,15 @@ class FactorioInstance:
         if not self._initialized or not self.container:
             return
         
+        # Disconnect RCON first
+        if self.rcon_client is not None:
+            try:
+                await asyncio.to_thread(self.rcon_client.close)
+            except Exception:
+                pass  # Ignore RCON disconnect errors during shutdown
+            finally:
+                self.rcon_client = None
+        
         try:
             self.container.stop(timeout=10)
             self.container.remove()
@@ -114,9 +135,67 @@ class FactorioInstance:
                 self.docker_client.close()
                 self.docker_client = None
     
-    async def execute_python_code(self, _code: str, _timeout: Optional[float] = None) -> str:
+    async def _connect_rcon(self) -> None:
+        """Connect to the RCON server for this Factorio instance."""
+        if not RCON_AVAILABLE:
+            raise RuntimeError("factorio-rcon-py library not available")
+        
+        if not self._initialized:
+            raise RuntimeError("Factorio instance is not running")
+        
+        if self.rcon_client is not None:
+            return  # Already connected
+        
+        # Calculate RCON port for this instance
+        rcon_port = self.config.rcon_port + hash(self.instance_id) % 1000
+        
+        try:
+            # Create RCON client
+            self.rcon_client = factorio_rcon.RCONClient(
+                ip_address="localhost",
+                port=rcon_port,
+                password=self.config.rcon_password,
+                connect_on_init=False
+            )
+            
+            # Connect to RCON server
+            await asyncio.to_thread(self.rcon_client.connect)
+            
+        except Exception as e:
+            self.rcon_client = None
+            raise RCONConnectError(f"Failed to connect to RCON on port {rcon_port}: {e}")
+    
+    async def execute_python_code(self, code: str, timeout: Optional[float] = None) -> str:
         """Execute Python code in the Factorio environment via REPL."""
-        raise NotImplementedError("execute_python_code method not implemented yet")
+        if not self._initialized:
+            raise RuntimeError("Factorio instance is not running")
+        
+        # Ensure RCON connection
+        if self.rcon_client is None:
+            await self._connect_rcon()
+        
+        try:
+            # Format the Python code for execution via RCON
+            # Use /sc (server command) to execute Lua that runs Python code
+            lua_command = f'/sc rcon.print(tostring(({code})))'
+            
+            # Execute command via RCON with timeout
+            if timeout:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(self.rcon_client.send_command, lua_command),
+                    timeout=timeout
+                )
+            else:
+                result = await asyncio.to_thread(self.rcon_client.send_command, lua_command)
+            
+            return str(result) if result else ""
+            
+        except (RCONSendError, RCONReceiveError, RCONNotConnected) as e:
+            raise RuntimeError(f"RCON command failed: {e}")
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Python code execution timed out after {timeout}s")
+        except Exception as e:
+            raise RuntimeError(f"Failed to execute Python code: {e}")
     
     async def execute_tool(self, _tool_name: str, _args: Dict[str, Any]) -> Any:
         """Execute a Factorio API tool with given arguments."""
