@@ -11,7 +11,7 @@ class TestFactorioConfig:
     def test_default_config(self):
         """Test default configuration values."""
         config = FactorioConfig()
-        assert config.docker_image == "factorio/factorio:stable"
+        assert config.docker_image == "factorio:latest"
         assert config.container_name_prefix == "factorio-inspect"
         assert config.base_port == 34197
         assert config.rcon_port == 27015
@@ -22,8 +22,6 @@ class TestFactorioConfig:
         assert config.cpu_limit == 2.0
         assert config.log_level == "INFO"
         assert config.enable_mods is False
-        assert config.mod_list == []
-        assert config.custom_server_settings == {}
     
     def test_custom_config(self):
         """Test custom configuration values."""
@@ -32,15 +30,13 @@ class TestFactorioConfig:
             base_port=35000,
             headless=False,
             timeout=600.0,
-            enable_mods=True,
-            mod_list=["mod1", "mod2"]
+            enable_mods=True
         )
         assert config.docker_image == "custom/factorio:latest"
         assert config.base_port == 35000
         assert config.headless is False
         assert config.timeout == 600.0
         assert config.enable_mods is True
-        assert config.mod_list == ["mod1", "mod2"]
     
     def test_config_validation(self):
         """Test configuration validation."""

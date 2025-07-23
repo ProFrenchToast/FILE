@@ -8,7 +8,7 @@ class FactorioConfig(BaseModel):
     """Configuration for Factorio sandbox environment."""
     
     # Docker configuration
-    docker_image: str = Field(default="factorio/factorio:stable", description="Docker image to use")
+    docker_image: str = Field(default="factorio:latest", description="Docker image to use")
     container_name_prefix: str = Field(default="factorio-inspect", description="Prefix for container names")
     
     # Network configuration
@@ -37,13 +37,13 @@ class FactorioConfig(BaseModel):
     
     # Advanced options
     enable_mods: bool = Field(default=False, description="Enable mod support")
-    mod_list: List[str] = Field(default_factory=list, description="List of mods to load")
-    custom_server_settings: Dict[str, Any] = Field(default_factory=dict, description="Custom server settings")
+    # Note: These fields are simplified to make the config hashable
+    # For complex configurations, consider creating specialized config objects
     
     class Config:
         """Pydantic configuration."""
         extra = "forbid"
-        validate_assignment = True
+        frozen = True  # Make the model immutable and hashable
 
 
 class FactorioToolConfig(BaseModel):
@@ -57,6 +57,7 @@ class FactorioToolConfig(BaseModel):
     class Config:
         """Pydantic configuration."""
         extra = "forbid"
+        frozen = True
 
 
 class FactorioEvaluationConfig(BaseModel):
@@ -71,3 +72,4 @@ class FactorioEvaluationConfig(BaseModel):
     class Config:
         """Pydantic configuration."""
         extra = "forbid"
+        frozen = True

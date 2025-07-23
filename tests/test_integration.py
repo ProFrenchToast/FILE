@@ -2,10 +2,42 @@
 
 import pytest
 import asyncio
+import docker
 from unittest.mock import patch, Mock, AsyncMock
 from factorio_inspect.environment import FactorioSandboxEnvironment
 from factorio_inspect.instance import FactorioInstance
 from factorio_inspect.config import FactorioConfig
+
+
+def cleanup_test_containers():
+    """Clean up any test containers that might be left behind."""
+    try:
+        client = docker.from_env()
+        # Find containers with our test prefixes
+        test_prefixes = [
+            "factorio-inspect-real-docker-test-",
+            "factorio-inspect-rcon-docker-test-",
+            "factorio-inspect-test_task-",
+            "factorio-inspect-basic_factorio_test-"
+        ]
+        
+        for container in client.containers.list(all=True):
+            if any(container.name.startswith(prefix) for prefix in test_prefixes):
+                try:
+                    container.stop()
+                    container.remove(force=True)
+                    print(f"Cleaned up test container: {container.name}")
+                except Exception as e:
+                    print(f"Failed to cleanup container {container.name}: {e}")
+    except Exception as e:
+        print(f"Failed to cleanup containers: {e}")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_on_exit():
+    """Ensure test containers are cleaned up after the test session."""
+    yield
+    cleanup_test_containers()
 
 
 class TestFactorioIntegration:
@@ -50,10 +82,10 @@ class TestFactorioIntegration:
                 assert result.success
                 assert "Hello from container" in result.stdout
                 
-                # Test Python code execution (will raise NotImplementedError from execute_python_code)
+                # Test Python code execution (will fail due to RCON connection error)
                 result = await environment.exec(["python", "-c", "print('hello')"])
                 assert not result.success
-                assert "not implemented" in result.stderr
+                assert "Failed to connect to RCON" in result.stderr
             
             # After context exit, should be stopped
             assert not instance.is_running
@@ -62,21 +94,35 @@ class TestFactorioIntegration:
     @pytest.mark.integration
     async def test_sample_init_cleanup_cycle(self, config):
         """Test Inspect AI sample initialization and cleanup cycle."""
-        # These will fail until we implement sample_init/sample_cleanup
-        with pytest.raises(NotImplementedError):
+        with patch('factorio_inspect.environment.FactorioInstance') as mock_instance_class:
+            # Mock the instance creation and startup
+            mock_instance = Mock()
+            mock_instance.start = AsyncMock()
+            mock_instance.stop = AsyncMock()
+            mock_instance_class.return_value = mock_instance
+            
+            # Test sample initialization
             result = await FactorioSandboxEnvironment.sample_init(
                 "test_task",
                 config,
                 metadata={"scenario": "basic_automation"}
             )
-        
-        with pytest.raises(NotImplementedError):
+            
+            # Verify the result structure
+            assert "sandbox" in result
+            assert isinstance(result["sandbox"], FactorioSandboxEnvironment)
+            mock_instance.start.assert_called_once()
+            
+            # Test sample cleanup
             await FactorioSandboxEnvironment.sample_cleanup(
                 "test_task",
                 config,
-                environments={},
+                environments=result,
                 interrupted=False
             )
+            
+            # Verify cleanup was called
+            mock_instance.stop.assert_called_once()
     
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -189,8 +235,9 @@ class TestFactorioIntegration:
         assert hasattr(FactorioSandboxEnvironment, 'default_concurrency')
         
         # Test concurrency spec
-        spec = FactorioSandboxEnvironment.default_concurrency()
-        assert spec.type == "factorio"
+        concurrency = FactorioSandboxEnvironment.default_concurrency()
+        assert isinstance(concurrency, int)
+        assert concurrency == 3
         
         # Test that the sandbox is properly decorated
         assert hasattr(FactorioSandboxEnvironment, '__qualname__')
@@ -211,8 +258,8 @@ class TestFactorioIntegration:
             
             # Mock RCON
             mock_rcon_client = Mock()
-            mock_rcon_client.connect = AsyncMock()
-            mock_rcon_client.send_command = AsyncMock(return_value="42")
+            mock_rcon_client.connect = Mock()  # Synchronous method
+            mock_rcon_client.send_command = Mock(return_value="42")  # Synchronous method
             mock_rcon.return_value = mock_rcon_client
             
             # Create instance and test Python execution
@@ -281,8 +328,8 @@ class TestFactorioIntegration:
                 
                 # RCON client mock
                 rcon_client = Mock()
-                rcon_client.connect = AsyncMock()
-                rcon_client.send_command = AsyncMock(return_value=f"result-{i}")
+                rcon_client.connect = Mock()  # Synchronous method
+                rcon_client.send_command = Mock(return_value=f"result-{i}")  # Synchronous method
                 rcon_clients.append(rcon_client)
             
             mock_client.containers.run.side_effect = containers
@@ -334,7 +381,7 @@ class TestFactorioIntegration:
             # Mock RCON with connection error
             from factorio_rcon import RCONConnectError
             mock_rcon_client = Mock()
-            mock_rcon_client.connect = AsyncMock(side_effect=RCONConnectError("Connection failed"))
+            mock_rcon_client.connect = Mock(side_effect=RCONConnectError("Connection failed"))  # Synchronous method
             mock_rcon.return_value = mock_rcon_client
             
             instance = FactorioInstance(config, "rcon-error-test")

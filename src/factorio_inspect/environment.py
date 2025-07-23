@@ -1,5 +1,6 @@
 """Factorio Sandbox Environment for Inspect AI integration."""
 
+import time
 from typing import Dict, List, Optional, Any
 
 from inspect_ai.util import ExecResult, SandboxEnvironment, SandboxEnvironmentSpec, sandboxenv
@@ -92,12 +93,40 @@ class FactorioSandboxEnvironment(SandboxEnvironment):
             )
     
     async def write_file(self, file: str, contents: str | bytes) -> None:
-        """Write a file to the sandbox."""
-        raise NotImplementedError("write_file method not implemented yet")
+        """Write a file to the sandbox.
+        
+        Note: File I/O operations are not supported in Factorio game environments.
+        Factorio is a game environment where interaction happens through game mechanics
+        and Python code execution via RCON, not through traditional file operations.
+        
+        Raises:
+            NotImplementedError: Always, as file operations don't have meaningful
+                semantics in the Factorio game environment.
+        """
+        raise NotImplementedError(
+            "File I/O operations are not supported in Factorio game environments. "
+            "Use Python code execution instead to interact with the game world."
+        )
     
     async def read_file(self, file: str, text: bool = True) -> str | bytes:
-        """Read a file from the sandbox."""
-        raise NotImplementedError("read_file method not implemented yet")
+        """Read a file from the sandbox.
+        
+        Note: File I/O operations are not supported in Factorio game environments.
+        Factorio is a game environment where interaction happens through game mechanics
+        and Python code execution via RCON, not through traditional file operations.
+        
+        Args:
+            file: The file path to read (not used)
+            text: Whether to read as text or binary (not used)
+            
+        Raises:
+            NotImplementedError: Always, as file operations don't have meaningful
+                semantics in the Factorio game environment.
+        """
+        raise NotImplementedError(
+            "File I/O operations are not supported in Factorio game environments. "
+            "Use Python code execution instead to interact with the game world."
+        )
     
     @classmethod
     async def task_init(
@@ -106,8 +135,13 @@ class FactorioSandboxEnvironment(SandboxEnvironment):
         config: Optional[FactorioConfig] = None,
         **kwargs
     ) -> None:
-        """Initialize global resources for the task."""
-        raise NotImplementedError("task_init method not implemented yet")
+        """Initialize global resources for the task.
+        
+        For Factorio environments, no global initialization is needed
+        as each sample gets its own isolated instance.
+        """
+        # No global initialization needed for Factorio environments
+        pass
     
     @classmethod
     async def sample_init(
@@ -117,8 +151,36 @@ class FactorioSandboxEnvironment(SandboxEnvironment):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> Dict[str, "FactorioSandboxEnvironment"]:
-        """Initialize sandbox environment for a sample."""
-        raise NotImplementedError("sample_init method not implemented yet")
+        """Initialize sandbox environment for a sample.
+        
+        Creates a new Factorio instance with unique ID and starts it up.
+        Each sample gets its own isolated Docker container and game instance.
+        
+        Args:
+            task_name: Name of the evaluation task
+            config: Factorio configuration (uses default if None)
+            metadata: Optional metadata (can contain scenario info, etc.)
+            **kwargs: Additional arguments (ignored)
+            
+        Returns:
+            Dict containing the sandbox environment: {"sandbox": FactorioSandboxEnvironment}
+        """
+        # Use default config if none provided
+        if config is None:
+            config = FactorioConfig()
+        
+        # Create unique instance ID using task name and timestamp
+        timestamp = int(time.time() * 1000)  # milliseconds for uniqueness
+        instance_id = f"{task_name}-{timestamp}"
+        
+        # Create and start the Factorio instance
+        instance = FactorioInstance(config, instance_id)
+        await instance.start()
+        
+        # Create the sandbox environment with the instance
+        environment = cls(instance)
+        
+        return {"sandbox": environment}
     
     @classmethod
     async def sample_cleanup(
@@ -129,20 +191,59 @@ class FactorioSandboxEnvironment(SandboxEnvironment):
         interrupted: bool = False,
         **kwargs
     ) -> None:
-        """Clean up sandbox environment after sample completion."""
-        raise NotImplementedError("sample_cleanup method not implemented yet")
+        """Clean up sandbox environment after sample completion.
+        
+        Stops all Factorio instances in the provided environments dict.
+        Handles cleanup gracefully even if some instances fail to stop.
+        
+        Args:
+            task_name: Name of the evaluation task
+            config: Factorio configuration (not used in cleanup)
+            environments: Dict of environments to clean up (from sample_init)
+            interrupted: Whether cleanup is due to interruption (doesn't affect behavior)
+            **kwargs: Additional arguments (ignored)
+        """
+        if not environments:
+            # Nothing to clean up
+            return
+        
+        # Stop all instances, continuing even if some fail
+        for env_name, environment in environments.items():
+            try:
+                await environment.instance.stop()
+            except Exception as e:
+                # Log the error but continue with cleanup of other instances
+                # In a real implementation, we might want proper logging here
+                print(f"Warning: Failed to stop instance for {env_name}: {e}")
+                continue
     
     @classmethod
     async def task_cleanup(
         cls,
         task_name: str,
         config: Optional[FactorioConfig] = None,
-        **kwargs
+        cleanup: bool = True
     ) -> None:
-        """Clean up global resources after task completion."""
-        raise NotImplementedError("task_cleanup method not implemented yet")
+        """Clean up global resources after task completion.
+        
+        For Factorio environments, no global cleanup is needed
+        as cleanup is handled per-sample in sample_cleanup().
+        
+        Args:
+            task_name: Name of task using the sandbox environment
+            config: Factorio configuration (optional)
+            cleanup: Whether to actually cleanup resources
+        """
+        # No global cleanup needed for Factorio environments
+        pass
     
     @classmethod
-    def default_concurrency(cls) -> SandboxEnvironmentSpec:
+    def default_concurrency(cls) -> int | None:
         """Return default concurrency limits for Factorio environments."""
-        return SandboxEnvironmentSpec(type="factorio")
+        # Factorio containers use significant resources, so limit concurrent instances
+        return 3
+    
+    @classmethod  
+    def config_deserialize(cls, config: dict) -> FactorioConfig:
+        """Deserialize config from dictionary for logging/reloading."""
+        return FactorioConfig(**config)
